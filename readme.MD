@@ -1,52 +1,77 @@
-# AWS VPC TEST
+# AWS Network Provisioning with Terraform
 
-![alt text](images/vpc.jpg)
+A Terraform root configuration that provisions a three-tier AWS network - public, private and database subnets across two availability zones - by composing a reusable VPC module.
 
-we can override the terraform-aws-vpc module using vpc-test and we can create following resources.  
-It is for the Users to change their configuration which required upon the resources in VPC.
-VPC-Test have the provider file that refers to terraform-aws-vpc which using the source of "../terraform-aws-vpc"
+![Terraform](https://img.shields.io/badge/Terraform-7B42BC?style=flat-square&logo=terraform&logoColor=white)
+![AWS](https://img.shields.io/badge/AWS-232F3E?style=flat-square&logo=amazonwebservices&logoColor=white)
 
-* VPC
-* Internet Gateway with VPC association
-* 2 Public subnets in 1a and 1b
-* 2 Private subnets in 1a and 1b
-* 2 Database subnets in 1a and 1b
-* Elastic IP
-* NAT gateway in 1a public subnet
-* Public Route Table
-* Private Route Table
-* Database Route Table
-* Subnets and Route table associations
-* VPC peering if user requests
-* Adding the peering route in default VPC, if user don't provide acceptor VPC explicitly.
-* Adding the peering routes in public, private and database route tables
+---
+
+## Before you clone
+
+`vpc.tf` sources its module from a sibling directory that is **not part of this repository**:
+
+    module "vpc" {
+      source = "../terraform-aws-vpc"
+      ...
+    }
+
+`terraform init` will therefore fail on a fresh clone until that module is available at the relative path. This configuration is the caller; the module holds the resource definitions.
+
+The intended fix is to publish the module and reference it by source rather than by relative path:
+
+    module "vpc" {
+      source = "git::https://github.com/jaik143/terraform-aws-vpc.git?ref=v1.0.0"
+      ...
+    }
+
+Pinning to a tag also means an upstream change cannot silently alter what this configuration deploys.
+
+## Network layout
+
+    VPC
+    |
+    +-- Public     10.0.1.0/24 (az-a)   10.0.2.0/24 (az-b)    -> Internet Gateway
+    +-- Private    10.0.11.0/24 (az-a)  10.0.12.0/24 (az-b)   -> NAT Gateway
+    +-- Database   10.0.21.0/24 (az-a)  10.0.22.0/24 (az-b)   -> no internet route
+
+Each tier has progressively less reach: public subnets route to the Internet Gateway, private subnets reach the internet outbound only through the NAT Gateway, and the database tier has no internet route at all.
+
+## Why a separate database tier
+
+Splitting the database subnets from the general private tier means they can carry their own route table and network ACLs without touching application subnets, and an RDS subnet group has a dedicated place to live. It costs nothing to separate now and is disruptive to retrofit later.
 
 ## Inputs
 
-* project_name (Required) - your project name
-* environment (Required) - which environment you are working in
-* vpc_cidr (Optional) - Default value is 10.0.0.0/16, user can override
-* enable_dns_hostnames (Optional) - Default value is true
-* common_tags (Optional) - Better to provide
-* vpc_tags (Optional) - Default value is empty. type is map
-* igw_tags (Optional) - Default value is empty. type is map
-* public_subnets_cidr (Required) - User must provide 2 valid public subnets CIDR
-* public_subnets_tags (Optional) - Default value is empty. type is map
-* private_subnets_cidr (Required) - User must provide 2 valid private subnets CIDR
-* private_subnets_tags (Optional) - Default value is empty. type is map
-* database_subnets_cidr (Required) - User must provide 2 valid database subnets CIDR
-* database_subnets_tags (Optional) - Default value is empty. type is map
-* nat_gateway_tags (Optional) - Default value is empty. type is map
-* public_route_table_tags (Optional) - Default value is empty. type is map
-* private_route_table_tags (Optional) - Default value is empty. type is map
-* database_route_table_tags (Optional) - Default value is empty. type is map
-* is_peering_required (Optional) - default value is false
-* acceptor_vpc_id (Optional) - default value is default VPC ID
-* vpc_peering_tags (Optional) - Default value is empty. type is map
+| Variable | Default | Purpose |
+|---|---|---|
+| `project_names` | `expense` | Name prefix applied to every resource |
+| `common_tags` | Project / Environment / Terraform | Tags merged onto all resources |
+| `public_subnet_cidrs` | `["10.0.1.0/24", "10.0.2.0/24"]` | One CIDR per AZ |
+| `private_subnet_cidrs` | `["10.0.11.0/24", "10.0.12.0/24"]` | One CIDR per AZ |
+| `database_subnet_cidrs` | `["10.0.21.0/24", "10.0.22.0/24"]` | One CIDR per AZ |
+| `is_peering_required` | `true` | Feature flag - skip peering in lower environments |
+
+Every value is overridable from a `.tfvars` file, so the same configuration serves dev, staging and production without edits.
 
 ## Outputs
 
-* vpc_id -  VPC ID created
-* public_subnet_ids - 2 public subnet ID created
-* private_subnet_ids - 2 private subnet ID created
-* database_subnet_ids - 2 databases subnet ID created
+Defined in `output.tf` - VPC and subnet identifiers, so downstream stacks (EKS, RDS, load balancers) consume them via remote state instead of hard-coding IDs that change on every rebuild.
+
+## Usage
+
+    terraform init
+    terraform fmt -check
+    terraform validate
+    terraform plan -var-file=dev.tfvars -out=tfplan
+    terraform apply tfplan
+
+## Tear down
+
+    terraform destroy -var-file=dev.tfvars
+
+NAT Gateways bill hourly whether or not traffic flows through them - destroy unused environments rather than leaving them running.
+
+---
+
+**Author** - Kadali Jayanth Kumar . [LinkedIn](https://linkedin.com/in/jayanth-kadali-419798182)
